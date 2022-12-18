@@ -4,14 +4,14 @@
 //
 //   const userModel = Convert.toUserModel(json);
 
-export interface UserModel {
-    cardImage?: string;
-    dept?: string;
-    email: string;
-    image?: string;
-    name?: string;
-    role?: string;
-    token?: string;
-    uid?: string;
+export class UserModel {
+  cardImage?: string;
+  dept?: string;
+  email?: string;
+  image?: string;
+  name?: string;
+  role?: string;
+  token?: string;
+  uid?: string;
 }
 

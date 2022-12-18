@@ -6,6 +6,7 @@ import {UserModel} from "./models/user_model";
 
 import * as serviceAccount from "../src/service_account.json";
 import {ServiceAccount} from "firebase-admin";
+import {EventModel} from "./models/event_model";
 
 admin.initializeApp({
   credential: admin.credential.cert((<ServiceAccount>serviceAccount)),
@@ -13,6 +14,33 @@ admin.initializeApp({
 
 const db = admin.firestore();
 const fcm = admin.messaging();
+
+exports.listenToEvents = functions
+    .firestore
+    .document("events/{eventId}")
+    .onCreate(async (snapshot, context) => {
+      const eventData = snapshot.data();
+      console.log("EVENTID: ", context.eventId);
+      const event = Object.assign(new EventModel(), eventData);
+      const usersQuery = await db.collection("users").get();
+      const tokens: string[] = [];
+      for (const userDoc of usersQuery.docs) {
+        const user: UserModel = Object.assign(new UserModel(), userDoc.data());
+        if (user.token && user.role != "admin") {
+          tokens.push(user.token);
+        }
+      }
+      console.log("TOKENS LENGTH: ", tokens.length);
+      if (tokens.length != 0) {
+        await fcm.sendMulticast({
+          tokens: tokens,
+          notification: {
+            title: "New Event has been created!",
+            body: event.title + " by " + event.adminName,
+          },
+        });
+      }
+    });
 
 
 exports.listenToMessages = functions
@@ -35,10 +63,11 @@ exports.listenToMessages = functions
           return user.uid === message.sentBy;
         }) : [];
         if (sentBy.length > 0 && sentTo.length > 0) {
+          const temp: string[] = sentTo.filter((uid) => {
+            return uid !== message.sentBy;
+          });
           await fcm.sendMulticast({
-            tokens: sentTo.filter((uid) => {
-              return uid !== sentBy[0].uid;
-            }),
+            tokens: temp,
             notification: {
               title: sentBy[0].name,
               body: message.message,
@@ -48,94 +77,13 @@ exports.listenToMessages = functions
       }
     });
 
-exports.sendNotification = functions.runWith({
-  timeoutSeconds: 540,
-  memory: "512MB",
-}).https.onRequest(async (req, response) => {
-  try {
-    const chatDoc = await db
-        .collection("chats")
-        .doc("6YYXn32OLTHfCbWQTLLg")
-        .get();
-    const chatData: any = chatDoc.data();
-    const messageDoc = await chatDoc.ref
-        .collection("messages")
-        .doc("It44m6RRCmKCPJX3spFG")
-        .get();
-    const messageData: any = messageDoc.data();
-    if (messageData && chatData) {
-      functions.logger.log("Message and Chat are not Empty");
-      const messageItem: MessageItem = <MessageItem>messageData;
-      const chatItem: ChatModel = <ChatModel>chatData;
-      const sentTo: string[] = await getParticipants(chatItem);
-      const sentBy: UserModel[] = chatItem.participantsData ? chatItem.participantsData.filter((user) => {
-        return user.uid === messageItem.sentBy;
-      }) : [];
-      if (sentBy.length > 0 && sentTo.length > 0) {
-        await fcm.sendMulticast({
-          tokens: sentTo.filter((uid) => {
-            return uid !== sentBy[0].uid;
-          }),
-          notification: {
-            title: sentBy[0].name,
-            body: messageItem.message,
-          },
-        });
-      }
-      await response.send({
-        status: 200,
-        message: messageItem.message,
-        participants: chatItem.participants,
-      });
-      return;
-    } else {
-      await response.send({status: 202, message: "message and chat are null"});
-      return;
-    }
-  } catch (error) {
-    await response.send({status: 200, message: "ERROR: "+ error});
-    return;
-  }
-});
-
-exports.sendDummyNotification = functions.https.onRequest(async (req, resp) => {
-  try {
-    const token: string = req.body["token"];
-    const title: string = req.body["title"];
-    const body: string = req.body["body"];
-    await sendNotification(title, body, token);
-    resp.send({status: 200, message: "notification sent!"});
-  } catch (e) {
-    resp.send({status: 200, message: "notification not sent: "+e});
-  }
-});
-
-
-const sendNotification = async (title: string, body:string, token: string): Promise<boolean> => {
-  try {
-    await fcm.send({
-      token: token,
-      notification: {
-        title: title,
-        body: body,
-      },
-    });
-    return true;
-  } catch (e) {
-    console.log("Cannot Send notification to: ", token);
-    return false;
-  }
-};
-
 const getParticipants = async (chatItem: ChatModel): Promise<string[]> => {
   console.log("GetParticipants");
   try {
     if (chatItem) {
       console.log("Chat Item is not null");
-      const uids: string[] = chatItem.participantsData ? chatItem.participantsData.map((user) => {
-        return user.uid ?? "";
-      }) : [];
       const participants: string[] = [];
+      const uids: string[] = chatItem.participants ? chatItem.participants : [];
       if (uids.length > 0) {
         for (const uid of uids) {
           console.log("Getting Data For: ", uid);
@@ -160,15 +108,3 @@ const getParticipants = async (chatItem: ChatModel): Promise<string[]> => {
     return [];
   }
 };
-
-exports.getUser = functions.https.onRequest(async (req, res) => {
-  try {
-    const uid: string = req.body["uid"];
-    const userDoc = await db.collection("users").doc(uid).get();
-    const userData = userDoc.data();
-    const user: UserModel = <UserModel>userData;
-    res.send({status: 200, message: user});
-  } catch (e) {
-    res.send({status: 500, message: "Error"+e});
-  }
-});
